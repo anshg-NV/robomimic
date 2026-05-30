@@ -23,7 +23,6 @@ import os
 import shutil
 import psutil
 import sys
-import socket
 import traceback
 
 from collections import OrderedDict
@@ -31,16 +30,15 @@ from collections import OrderedDict
 import torch
 from torch.utils.data import DataLoader
 
-import robomimic
-import robomimic.utils.train_utils as TrainUtils
-import robomimic.utils.torch_utils as TorchUtils
-import robomimic.utils.obs_utils as ObsUtils
 import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.lang_utils as LangUtils
-from robomimic.config import config_factory
+import robomimic.utils.obs_utils as ObsUtils
+import robomimic.utils.torch_utils as TorchUtils
+import robomimic.utils.train_utils as TrainUtils
 from robomimic.algo import algo_factory, RolloutPolicy
-from robomimic.utils.log_utils import PrintLogger, DataLogger, flush_warnings
+from robomimic.config import config_factory
+from robomimic.utils.log_utils import DataLogger, PrintLogger, flush_warnings
 
 
 def train(config, device, resume=False):
@@ -124,8 +122,7 @@ def train(config, device, resume=False):
         for env_i in range(len(env_meta_list)):
             # check if this env should be evaluated
             dataset_cfg = config.train.data[env_i]
-            do_eval = dataset_cfg.get("eval", True)
-            if not do_eval:
+            if not dataset_cfg.get("eval", True):
                 continue
 
             env_meta = env_meta_list[env_i]
@@ -139,20 +136,16 @@ def train(config, device, resume=False):
                     env_names.append(name)
 
             # create environment for each env_name
-            def create_env(env_name):
-                env_kwargs = dict(
+            for env_name in env_names:
+                env = EnvUtils.create_env_from_metadata(
                     env_meta=env_meta,
                     env_name=env_name,
                     render=False,
                     render_offscreen=config.experiment.render_video,
                     use_image_obs=shape_meta["use_images"] or shape_meta["use_depths"],
                 )
-                env = EnvUtils.create_env_from_metadata(**env_kwargs)
                 # handle environment wrappers
                 env = EnvUtils.wrap_env_from_config(env, config=config)  # apply environment warpper, if applicable
-                return env
-            for env_name in env_names:
-                env = create_env(env_name)
                 env_key = os.path.splitext(os.path.basename(dataset_cfg["path"]))[0] if not dataset_cfg.get("key", None) else dataset_cfg["key"]
                 envs[env_key] = env
                 print(env)
@@ -171,7 +164,7 @@ def train(config, device, resume=False):
         print(validset)
         print("")
 
-    # maybe retreve statistics for normalizing observations
+    # maybe retrieve statistics for normalizing observations
     obs_normalization_stats = None
     if config.train.hdf5_normalize_obs:
         obs_normalization_stats = trainset.get_obs_normalization_stats()
@@ -257,7 +250,7 @@ def train(config, device, resume=False):
         # load model weights and optimizer state
         model.deserialize(ckpt_dict["model"], load_optimizers=True)
         print("*" * 50)
-    
+
     # if checkpoint is specified, load in model weights;
     # will not use ckpt_path if resuming training
     ckpt_path = config.experiment.ckpt_path
@@ -320,8 +313,8 @@ def train(config, device, resume=False):
                 (time.time() - last_ckpt_time > config.experiment.save.every_n_seconds)
             epoch_check = (config.experiment.save.every_n_epochs is not None) and \
                 (epoch > 0) and (epoch % config.experiment.save.every_n_epochs == 0)
-            epoch_list_check = (epoch in config.experiment.save.epochs)
-            should_save_ckpt = (time_check or epoch_check or epoch_list_check)
+            epoch_list_check = epoch in config.experiment.save.epochs
+            should_save_ckpt = time_check or epoch_check or epoch_list_check
         ckpt_reason = None
         if should_save_ckpt:
             last_ckpt_time = time.time()
@@ -429,12 +422,12 @@ def train(config, device, resume=False):
         )
 
         # Save model checkpoints based on conditions (success rate, validation loss, etc)
-        if should_save_ckpt:    
+        if should_save_ckpt:
             TrainUtils.save_model(
                 model=model,
                 config=config,
-                env_meta=env_meta_list[0] if len(env_meta_list)==1 else env_meta_list,
-                shape_meta=shape_meta_list[0] if len(shape_meta_list)==1 else shape_meta_list,
+                env_meta=env_meta_list[0] if len(env_meta_list) == 1 else env_meta_list,
+                shape_meta=shape_meta_list[0] if len(shape_meta_list) == 1 else shape_meta_list,
                 variable_state=variable_state,
                 ckpt_path=os.path.join(ckpt_dir, epoch_ckpt_name + ".pth"),
                 obs_normalization_stats=obs_normalization_stats,
@@ -446,8 +439,8 @@ def train(config, device, resume=False):
         TrainUtils.save_model(
             model=model,
             config=config,
-            env_meta=env_meta_list[0] if len(env_meta_list)==1 else env_meta_list,
-            shape_meta=shape_meta_list[0] if len(shape_meta_list)==1 else shape_meta_list,
+            env_meta=env_meta_list[0] if len(env_meta_list) == 1 else env_meta_list,
+            shape_meta=shape_meta_list[0] if len(shape_meta_list) == 1 else shape_meta_list,
             variable_state=variable_state,
             ckpt_path=latest_model_path,
             obs_normalization_stats=obs_normalization_stats,
@@ -469,7 +462,6 @@ def train(config, device, resume=False):
 
 
 def main(args):
-
     if args.config is not None:
         ext_cfg = json.load(open(args.config, 'r'))
         config = config_factory(ext_cfg["algo_name"])
@@ -514,7 +506,7 @@ def main(args):
     # catch error during training and print it
     res_str = "finished run successfully!"
     try:
-        train(config, device=device, resume=args.resume)
+        train(config, device, resume=args.resume)
     except Exception as e:
         res_str = "run failed with error:\n{}\n\n{}".format(e, traceback.format_exc())
     print(res_str)

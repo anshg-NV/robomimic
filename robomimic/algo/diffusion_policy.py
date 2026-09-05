@@ -19,6 +19,7 @@ import robomimic.models.diffusion_policy_nets as DPNets
 import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.obs_utils as ObsUtils
+import robomimic.utils.relative_action_utils as RelActionUtils
 
 from robomimic.algo import register_algo_factory_func, PolicyAlgo
 
@@ -54,6 +55,19 @@ class DiffusionPolicyUNet(PolicyAlgo):
         """
         Creates networks and places them into @self.nets.
         """
+        # chunk-anchored relative actions: the network predicts poses relative to the
+        # anchor, but the algo keeps taking and returning absolute actions, so ac_dim
+        # shrinks by one per end effector (quaternion -> rotation vector).
+        self.rel_config = self.algo_config.get("relative_actions", None)
+        if self.rel_config is not None and not self.rel_config.enabled:
+            self.rel_config = None
+        if self.rel_config is not None:
+            assert self.global_config.train.frame_stack == self.algo_config.horizon.observation_horizon, "relative actions anchor on the last observation frame, which requires train.frame_stack == algo.horizon.observation_horizon"
+            assert not self.global_config.train.hdf5_normalize_obs, "relative actions read unnormalized end effector poses out of the observation"
+            for k in list(self.rel_config.anchor_pos_keys) + list(self.rel_config.anchor_quat_keys):
+                assert k in self.obs_shapes, f"relative action anchor key '{k}' is not an observation key"
+            self.ac_dim = RelActionUtils.relative_ac_dim(self.ac_dim, len(self.rel_config.pos_indices))
+
         # set up different observation groups for @MIMO_MLP
         observation_group_shapes = OrderedDict()
         observation_group_shapes["obs"] = OrderedDict(self.obs_shapes)
@@ -119,7 +133,21 @@ class DiffusionPolicyUNet(PolicyAlgo):
         self.action_check_done = False
         self.obs_queue = None
         self.action_queue = None
-    
+
+    def _relative_anchors(self, obs):
+        """
+        Pull the per-end-effector anchor pose out of the most recent observation frame.
+
+        Args:
+            obs (dict): observation dict, with each value of shape [B, T, ...]
+
+        Returns:
+            tuple: (list of [B, 3] anchor positions, list of [B, 4] anchor xyzw quaternions)
+        """
+        anchor_pos = [obs[k][:, -1] for k in self.rel_config.anchor_pos_keys]
+        anchor_quat = [obs[k][:, -1] for k in self.rel_config.anchor_quat_keys]
+        return anchor_pos, anchor_quat
+
     def process_batch_for_training(self, batch):
         """
         Processes input batch from a data loader to filter out
@@ -141,7 +169,17 @@ class DiffusionPolicyUNet(PolicyAlgo):
         input_batch["obs"] = {k: batch["obs"][k][:, :To, :] for k in batch["obs"]}
         input_batch["goal_obs"] = batch.get("goal_obs", None) # goals may not be present
         input_batch["actions"] = batch["actions"][:, :Tp, :]
-        
+
+        if self.rel_config is not None:
+            anchor_pos, anchor_quat = self._relative_anchors(input_batch["obs"])
+            input_batch["actions"] = RelActionUtils.absolute_to_relative(
+                input_batch["actions"], anchor_pos, anchor_quat,
+                pos_indices=self.rel_config.pos_indices,
+                quat_indices=self.rel_config.quat_indices,
+                pos_scale=self.rel_config.pos_scale,
+                rot_scale=self.rel_config.rot_scale,
+            )
+
         # check if actions are normalized to [-1,1]
         if not self.action_check_done:
             actions = input_batch["actions"]
@@ -365,6 +403,16 @@ class DiffusionPolicyUNet(PolicyAlgo):
         start = To - 1
         end = start + Ta
         action = naction[:,start:end]
+
+        if self.rel_config is not None:
+            anchor_pos, anchor_quat = self._relative_anchors(inputs["obs"])
+            action = RelActionUtils.relative_to_absolute(
+                action, anchor_pos, anchor_quat,
+                pos_indices=self.rel_config.pos_indices,
+                quat_indices=self.rel_config.quat_indices,
+                pos_scale=self.rel_config.pos_scale,
+                rot_scale=self.rel_config.rot_scale,
+            )
         return action
 
     def serialize(self):

@@ -47,7 +47,20 @@ class DiffusionPolicyConfig(BaseConfig):
         self.algo.horizon.observation_horizon = 2
         self.algo.horizon.action_horizon = 8
         self.algo.horizon.prediction_horizon = 16
-        
+
+        # chunk-anchored relative actions: predict end effector poses relative to the measured
+        # pose at the most recent observation frame, instead of in the robot's fixed frame.
+        # The algo still consumes and produces absolute actions; only what the network sees
+        # changes, and each end effector's quaternion becomes a rotation vector. The dataset must
+        # hold unnormalized actions, since the deltas are taken against unnormalized observations.
+        self.algo.relative_actions.enabled = False
+        self.algo.relative_actions.pos_indices = [2, 9]                                   # start index of each end effector position in the absolute action
+        self.algo.relative_actions.quat_indices = [5, 12]                                 # start index of each end effector xyzw quaternion in the absolute action
+        self.algo.relative_actions.anchor_pos_keys = ["left_eef_pos", "right_eef_pos"]    # observation keys holding the measured positions
+        self.algo.relative_actions.anchor_quat_keys = ["left_eef_quat", "right_eef_quat"] # observation keys holding the measured xyzw quaternions
+        self.algo.relative_actions.pos_scale = 0.3                                        # position deltas are divided by this to fill [-1,1] [m]
+        self.algo.relative_actions.rot_scale = 0.85                                       # rotation vectors are divided by this to fill [-1,1] [rad]
+
         # UNet parameters
         self.algo.unet.enabled = True
         self.algo.unet.diffusion_step_embed_dim = 256
